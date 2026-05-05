@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">PS</div>
+          <div>
+            <h1>Photo Studio</h1>
+            <p>Local scan cropper</p>
+          </div>
+        </div>
+
+        <label class="file-drop" for="fileInput">
+          <input id="fileInput" type="file" accept="image/*" multiple />
+          <span>Select scan images</span>
+          <small>Choose one folder batch or hundreds of scans</small>
+        </label>
+
+        <section class="panel">
+          <h2>Scan Library</h2>
+          <div id="scanList" class="scan-list"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Detection</h2>
+          <label>
+            Sensitivity
+            <input id="thresholdInput" type="range" min="80" max="252" value="240" />
+            <span id="thresholdValue">240</span>
+          </label>
+          <label>
+            Minimum photo size
+            <input id="areaInput" type="range" min="2" max="80" value="12" />
+            <span id="areaValue">1.2%</span>
+          </label>
+          <label>
+            Border padding
+            <input id="paddingInput" type="range" min="0" max="60" value="0" />
+            <span id="paddingValue">0px</span>
+          </label>
+          <button id="detectButton" class="primary" disabled>Detect Photos</button>
+          <button id="detectAllButton" disabled>Detect All Scans</button>
+        </section>
+
+        <section class="panel">
+          <h2>Selected Crop</h2>
+          <div class="button-grid">
+            <button id="addBoxButton" disabled>Add Crop</button>
+            <button id="deleteBoxButton" disabled>Delete</button>
+            <button id="rotateLeftButton" disabled>Rotate Left</button>
+            <button id="rotateRightButton" disabled>Rotate Right</button>
+          </div>
+          <label class="check"><input id="autoOrientationInput" type="checkbox" checked /> Auto orientation</label>
+          <button id="cropButton" class="primary" disabled>Generate Results</button>
+          <button id="exportAllButton" disabled>Export All Reviewed</button>
+        </section>
+
+        <section class="panel muted-panel">
+          <h2>Pipeline</h2>
+          <label class="check"><input type="checkbox" checked disabled /> Crop detection</label>
+          <label class="check"><input type="checkbox" checked disabled /> Auto orientation</label>
+          <label class="check"><input type="checkbox" disabled /> Face grouping</label>
+          <label class="check"><input type="checkbox" disabled /> Upscale</label>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="toolbar">
+          <div>
+            <strong id="scanTitle">No scan selected</strong>
+            <span id="statusText">Choose an image to begin.</span>
+          </div>
+          <div class="toolbar-actions">
+            <button id="zoomOutButton" disabled>-</button>
+            <span id="zoomLabel">100%</span>
+            <button id="zoomInButton" disabled>+</button>
+          </div>
+        </header>
+
+        <section class="editor">
+          <div id="canvasWrap" class="canvas-wrap empty">
+            <img id="scanImage" alt="" />
+            <svg id="overlay"></svg>
+            <div class="empty-state">Select a scan to preview detected crops.</div>
+          </div>
+        </section>
+
+        <section class="results">
+          <div class="results-head">
+            <h2>Results</h2>
+            <span id="exportPath"></span>
+          </div>
+          <div id="resultsGrid" class="results-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
