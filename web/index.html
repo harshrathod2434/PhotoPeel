@@ -66,8 +66,49 @@
           <h2>Pipeline</h2>
           <label class="check"><input type="checkbox" checked disabled /> Crop detection</label>
           <label class="check"><input type="checkbox" checked disabled /> Auto orientation</label>
-          <label class="check"><input type="checkbox" disabled /> Face grouping</label>
+          <label class="check"><input type="checkbox" checked disabled /> Face grouping</label>
           <label class="check"><input type="checkbox" disabled /> Upscale</label>
+        </section>
+
+        <section class="panel">
+          <h2>Face Grouping</h2>
+          <label>
+            Identity threshold
+            <input id="faceThresholdInput" type="range" min="10" max="80" value="35" />
+            <span id="faceThresholdValue">0.35</span>
+          </label>
+          <label>
+            Face margin
+            <input id="faceMarginInput" type="range" min="0" max="80" value="35" />
+            <span id="faceMarginValue">0.35</span>
+          </label>
+          <button id="groupFacesButton" class="primary" disabled>Group Faces</button>
+        </section>
+
+        <section class="panel">
+          <h2>Save</h2>
+          <label>
+            Destination folder
+            <div class="input-row">
+              <input id="saveDestInput" class="text-input" type="text" placeholder="/Users/you/Desktop/PhotoStudio" />
+              <button id="pickFolderButton" type="button">Choose…</button>
+            </div>
+            <small class="hint">Server will create a new export folder inside this path.</small>
+          </label>
+          <label>
+            Top persons (folders)
+            <input id="topKInput" type="range" min="1" max="50" value="10" />
+            <span id="topKValue">10</span>
+          </label>
+          <label>
+            Min photos per person
+            <input id="minPhotosInput" type="range" min="1" max="20" value="2" />
+            <span id="minPhotosValue">2</span>
+          </label>
+          <div class="button-grid">
+            <button id="saveAllButton" disabled>Save All Crops</button>
+            <button id="saveFacesButton" disabled>Save Face Folders</button>
+          </div>
         </section>
       </aside>
 
@@ -84,20 +125,35 @@
           </div>
         </header>
 
-        <section class="editor">
-          <div id="canvasWrap" class="canvas-wrap empty">
-            <img id="scanImage" alt="" />
-            <svg id="overlay"></svg>
-            <div class="empty-state">Select a scan to preview detected crops.</div>
-          </div>
-        </section>
+        <div class="main-split">
+          <section class="editor">
+            <div id="canvasWrap" class="canvas-wrap empty">
+              <img id="scanImage" alt="" />
+              <svg id="overlay"></svg>
+              <div class="empty-state">Select a scan to preview detected crops.</div>
+            </div>
+          </section>
+
+          <aside class="results-panel current-panel">
+            <div class="current-panel-head">
+              <h2>Current Scan</h2>
+              <span id="exportPath"></span>
+            </div>
+            <div id="resultsGridCurrent" class="results-grid"></div>
+          </aside>
+        </div>
 
         <section class="results">
-          <div class="results-head">
-            <h2>Results</h2>
-            <span id="exportPath"></span>
+          <div class="results-panels">
+            <section class="results-panel">
+              <h2>All Crops</h2>
+              <div id="resultsGridAll" class="results-grid"></div>
+            </section>
+
+            <section class="results-panel">
+              <div id="faceGroups" class="face-groups"></div>
+            </section>
           </div>
-          <div id="resultsGrid" class="results-grid"></div>
         </section>
       </main>
     </div>

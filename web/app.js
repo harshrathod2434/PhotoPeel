@@ -10,6 +10,8 @@ const state = {
   selectedId: "",
   zoom: 1,
   drag: null,
+  faceSessionId: "",
+  personNames: {},
 };
 
 const el = {
@@ -29,13 +31,28 @@ const el = {
   areaValue: document.getElementById("areaValue"),
   paddingInput: document.getElementById("paddingInput"),
   paddingValue: document.getElementById("paddingValue"),
+  faceThresholdInput: document.getElementById("faceThresholdInput"),
+  faceThresholdValue: document.getElementById("faceThresholdValue"),
+  faceMarginInput: document.getElementById("faceMarginInput"),
+  faceMarginValue: document.getElementById("faceMarginValue"),
+  groupFacesButton: document.getElementById("groupFacesButton"),
+  saveDestInput: document.getElementById("saveDestInput"),
+  pickFolderButton: document.getElementById("pickFolderButton"),
+  topKInput: document.getElementById("topKInput"),
+  topKValue: document.getElementById("topKValue"),
+  minPhotosInput: document.getElementById("minPhotosInput"),
+  minPhotosValue: document.getElementById("minPhotosValue"),
+  saveAllButton: document.getElementById("saveAllButton"),
+  saveFacesButton: document.getElementById("saveFacesButton"),
   scanImage: document.getElementById("scanImage"),
   scanList: document.getElementById("scanList"),
   overlay: document.getElementById("overlay"),
   canvasWrap: document.getElementById("canvasWrap"),
   statusText: document.getElementById("statusText"),
   scanTitle: document.getElementById("scanTitle"),
-  resultsGrid: document.getElementById("resultsGrid"),
+  resultsGridCurrent: document.getElementById("resultsGridCurrent"),
+  resultsGridAll: document.getElementById("resultsGridAll"),
+  faceGroups: document.getElementById("faceGroups"),
   exportPath: document.getElementById("exportPath"),
   zoomInButton: document.getElementById("zoomInButton"),
   zoomOutButton: document.getElementById("zoomOutButton"),
@@ -80,7 +97,39 @@ function restoreScan(scan) {
   const fitZoom = Math.min(1, (window.innerWidth - 390) / scan.width, 700 / scan.height);
   setZoom(fitZoom || 1);
   renderScanList();
-  renderResults(scan.results || []);
+  renderCurrentAndAll();
+}
+
+function allSessionResults() {
+  const results = [];
+  state.scans.forEach((scan) => {
+    (scan.results || []).forEach((r) => results.push(r));
+  });
+  return results;
+}
+
+function renderGrid(container, results) {
+  container.innerHTML = "";
+  results.forEach((result) => {
+    const orientation = result.orientation?.label ? ` · ${result.orientation.label}` : "";
+    const card = document.createElement("article");
+    card.className = "result-card";
+    card.innerHTML = `
+      <img src="${result.url}" alt="${result.filename}">
+      <div>
+        <strong>${result.filename}</strong>
+        <span>${result.width} x ${result.height}${orientation}</span>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function renderCurrentAndAll() {
+  const scan = currentScan();
+  renderGrid(el.resultsGridCurrent, scan?.results || []);
+  renderGrid(el.resultsGridAll, allSessionResults());
+  updateControls();
 }
 
 function renderScanList() {
@@ -112,6 +161,10 @@ function updateControls() {
   const hasImage = Boolean(state.imageDataUrl);
   const hasSelected = Boolean(selectedBox());
   const hasBoxes = state.boxes.length > 0;
+  const scan = currentScan();
+  const hasResults = Boolean(scan?.results?.length);
+  const hasAnyResults = state.scans.some((s) => (s.results || []).length);
+  const hasFaceSession = Boolean(state.faceSessionId);
   el.detectButton.disabled = !hasImage;
   el.detectAllButton.disabled = !state.scans.length;
   el.cropButton.disabled = !hasImage || !hasBoxes;
@@ -123,12 +176,19 @@ function updateControls() {
   el.zoomInButton.disabled = !hasImage;
   el.zoomOutButton.disabled = !hasImage;
   el.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+  el.groupFacesButton.disabled = !hasAnyResults;
+  el.saveAllButton.disabled = !hasAnyResults;
+  el.saveFacesButton.disabled = !hasFaceSession;
 }
 
 function updateSettingLabels() {
   el.thresholdValue.textContent = el.thresholdInput.value;
   el.areaValue.textContent = `${(Number(el.areaInput.value) / 10).toFixed(1)}%`;
   el.paddingValue.textContent = `${el.paddingInput.value}px`;
+  el.faceThresholdValue.textContent = (Number(el.faceThresholdInput.value) / 100).toFixed(2);
+  el.faceMarginValue.textContent = (Number(el.faceMarginInput.value) / 100).toFixed(2);
+  el.topKValue.textContent = String(Number(el.topKInput.value));
+  el.minPhotosValue.textContent = String(Number(el.minPhotosInput.value));
 }
 
 function screenPoint(event) {
@@ -342,21 +402,131 @@ function rotateSelected(direction) {
   renderOverlay();
 }
 
-function renderResults(results) {
-  el.resultsGrid.innerHTML = "";
-  results.forEach((result) => {
-    const orientation = result.orientation?.label ? ` · ${result.orientation.label}` : "";
-    const card = document.createElement("article");
-    card.className = "result-card";
-    card.innerHTML = `
-      <img src="${result.url}" alt="${result.filename}">
-      <div>
-        <strong>${result.filename}</strong>
-        <span>${result.width} x ${result.height}${orientation}</span>
+// NOTE: results are always shown as two stacked grids (current + all).
+
+function renderFaceGroups(data) {
+  el.faceGroups.innerHTML = "";
+  if (!data?.persons?.length) {
+    const empty = document.createElement("p");
+    empty.className = "face-groups-empty";
+    empty.textContent = data?.total_faces === 0 ? "No faces detected in these photos." : "No persons found.";
+    el.faceGroups.appendChild(empty);
+    return;
+  }
+  const header = document.createElement("div");
+  header.className = "face-groups-head";
+  header.innerHTML = `<h2>Face Groups</h2><span>${data.total_faces} face${data.total_faces === 1 ? "" : "s"} · ${data.persons.length} person${data.persons.length === 1 ? "" : "s"}</span>`;
+  el.faceGroups.appendChild(header);
+
+  data.persons.forEach((person, idx) => {
+    const card = document.createElement("div");
+    card.className = "person-card";
+    const displayName = state.personNames[person.id] || `Person ${idx + 1}`;
+    const facesHtml = person.faces.map((f) => `
+      <div class="face-thumb">
+        <img src="${f.url}" alt="${f.source}" title="${f.source} · score ${f.score}">
       </div>
+    `).join("");
+    card.innerHTML = `
+      <div class="person-header">
+        <span class="person-badge">P${idx + 1}</span>
+        <input class="text-input person-name" data-person-id="${person.id}" value="${displayName}" />
+        <span>${person.count} photo${person.count === 1 ? "" : "s"}</span>
+      </div>
+      <div class="person-faces">${facesHtml}</div>
     `;
-    el.resultsGrid.appendChild(card);
+    el.faceGroups.appendChild(card);
   });
+
+  el.faceGroups.querySelectorAll("input[data-person-id]").forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const id = event.target.getAttribute("data-person-id");
+      state.personNames[id] = event.target.value;
+    });
+  });
+}
+
+function sessionExportIds() {
+  return state.scans
+    .filter((s) => s.imageId && (s.results || []).length)
+    .map((s) => s.imageId);
+}
+
+async function saveAllCrops() {
+  const exportIds = sessionExportIds();
+  if (!exportIds.length) return;
+  const destDir = (el.saveDestInput.value || "").trim();
+  if (!destDir) {
+    setStatus("Please set Destination folder first.");
+    return;
+  }
+  setStatus("Saving all exported crops...");
+  el.saveAllButton.disabled = true;
+  try {
+    const data = await postJson("/api/save_all", { exportIds, destDir });
+    setStatus(`Saved ${data.saved} image${data.saved === 1 ? "" : "s"} to ${data.outDir}.`);
+  } catch (err) {
+    setStatus(`Save failed: ${err.message}`);
+  } finally {
+    el.saveAllButton.disabled = false;
+  }
+}
+
+async function saveFaceFolders() {
+  if (!state.faceSessionId) return;
+  const destDir = (el.saveDestInput.value || "").trim();
+  if (!destDir) {
+    setStatus("Please set Destination folder first.");
+    return;
+  }
+  const topK = Number(el.topKInput.value);
+  const minPhotos = Number(el.minPhotosInput.value);
+  setStatus("Saving face-wise folders...");
+  el.saveFacesButton.disabled = true;
+  try {
+    const data = await postJson("/api/save_faces", {
+      sessionId: state.faceSessionId,
+      destDir,
+      topK,
+      minPhotos,
+      names: state.personNames,
+    });
+    setStatus(`Saved ${data.saved} photo${data.saved === 1 ? "" : "s"} into ${data.folders} folder${data.folders === 1 ? "" : "s"}: ${data.outDir}.`);
+  } catch (err) {
+    setStatus(`Save failed: ${err.message}`);
+  } finally {
+    el.saveFacesButton.disabled = false;
+  }
+}
+
+async function groupFaces() {
+  const exportIds = state.scans
+    .filter((s) => s.imageId && (s.results || []).length)
+    .map((s) => s.imageId);
+  if (!exportIds.length) return;
+  setStatus("Detecting and grouping faces…");
+  el.groupFacesButton.disabled = true;
+  try {
+    const data = await postJson("/api/faces_session", {
+      exportIds,
+      threshold: Number(el.faceThresholdInput.value) / 100,
+      margin:    Number(el.faceMarginInput.value) / 100,
+    });
+    state.faceSessionId = data.sessionId || "";
+    // reset default names for this run
+    state.personNames = {};
+    (data.persons || []).forEach((p, idx) => {
+      state.personNames[p.id] = `Person ${idx + 1}`;
+    });
+    renderFaceGroups(data);
+    const n = data.persons?.length || 0;
+    setStatus(`Found ${n} person${n === 1 ? "" : "s"} across ${data.total_faces} face${data.total_faces === 1 ? "" : "s"}.`);
+  } catch (err) {
+    setStatus(`Face grouping failed: ${err.message}`);
+  } finally {
+    el.groupFacesButton.disabled = false;
+    updateControls();
+  }
 }
 
 async function generateResults(scan = currentScan(), makeActive = true) {
@@ -373,7 +543,7 @@ async function generateResults(scan = currentScan(), makeActive = true) {
   scan.imageId = data.imageId || scan.imageId;
   scan.results = data.results;
   if (scan.localId === state.currentScanId) {
-    renderResults(data.results);
+    renderCurrentAndAll();
     el.exportPath.textContent = data.exportPath;
   }
   setStatus(`Generated ${data.results.length} cropped photo${data.results.length === 1 ? "" : "s"}.`);
@@ -390,6 +560,19 @@ async function exportAllReviewed() {
   const active = currentScan();
   if (active) restoreScan(active);
   setStatus(`Finished exporting ${reviewed.length} reviewed scans.`);
+}
+
+async function pickFolder() {
+  setStatus("Opening folder picker...");
+  try {
+    const data = await postJson("/api/pick_folder", {});
+    if (data.path) {
+      el.saveDestInput.value = data.path;
+      setStatus("Destination folder selected.");
+    }
+  } catch (err) {
+    setStatus(err.message);
+  }
 }
 
 el.fileInput.addEventListener("change", (event) => {
@@ -412,9 +595,14 @@ el.rotateRightButton.addEventListener("click", () => rotateSelected(1));
 el.zoomInButton.addEventListener("click", () => setZoom(state.zoom + 0.1));
 el.zoomOutButton.addEventListener("click", () => setZoom(state.zoom - 0.1));
 
-[el.thresholdInput, el.areaInput, el.paddingInput].forEach((input) => {
+[el.thresholdInput, el.areaInput, el.paddingInput, el.faceThresholdInput, el.faceMarginInput, el.topKInput, el.minPhotosInput].forEach((input) => {
   input.addEventListener("input", updateSettingLabels);
 });
+
+el.groupFacesButton.addEventListener("click", () => groupFaces().catch((err) => setStatus(err.message)));
+el.saveAllButton.addEventListener("click", () => saveAllCrops().catch((err) => setStatus(err.message)));
+el.saveFacesButton.addEventListener("click", () => saveFaceFolders().catch((err) => setStatus(err.message)));
+el.pickFolderButton.addEventListener("click", () => pickFolder());
 
 window.addEventListener("pointermove", (event) => {
   if (!state.drag) return;

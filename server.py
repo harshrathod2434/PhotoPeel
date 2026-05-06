@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -18,16 +20,20 @@ WEB_ROOT = ROOT / "web"
 DATA_ROOT = ROOT / "appdata"
 UPLOAD_ROOT = DATA_ROOT / "uploads"
 EXPORT_ROOT = DATA_ROOT / "exports"
-ORIENTATION_ROOT = Path("/Users/kriparathod/Desktop/6th sem/CV/OBJECT_ORIENTATION_DETECTOR")
-ORIENTATION_SITE_PACKAGES = (
-    ORIENTATION_ROOT / "venv" / "lib" / "python3.9" / "site-packages"
-)
+FACE_ROOT = DATA_ROOT / "faces"
+SESSION_EXPORT_ROOT = DATA_ROOT / "session_exports"
+
+FACE_PYTHON = "/opt/homebrew/bin/python3.11"
+FACE_SCRIPT = ROOT / "face_processor.py"
+ORIENTATION_ROOT = (ROOT.parent / "OBJECT_ORIENTATION_DETECTOR").resolve()
 ORIENTATION_MODEL = ORIENTATION_ROOT / "orientation_model_v2_0.9882.onnx"
+ORIENTATION_PYTHON = ORIENTATION_ROOT / "venv" / "bin" / "python"
+ORIENTATION_SCRIPT = ROOT / "orientation_processor.py"
 ORIENTATION_SESSION = None
 ORIENTATION_INPUT_NAME = None
 ORIENTATION_ERROR = None
 
-for folder in (UPLOAD_ROOT, EXPORT_ROOT):
+for folder in (UPLOAD_ROOT, EXPORT_ROOT, FACE_ROOT, SESSION_EXPORT_ROOT):
     folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -36,8 +42,9 @@ def load_orientation_model():
     if ORIENTATION_SESSION is not None or ORIENTATION_ERROR is not None:
         return ORIENTATION_SESSION
     try:
-        if str(ORIENTATION_SITE_PACKAGES) not in sys.path:
-            sys.path.append(str(ORIENTATION_SITE_PACKAGES))
+        if not ORIENTATION_MODEL.exists():
+            raise FileNotFoundError(f"Orientation model not found: {ORIENTATION_MODEL}")
+
         import onnxruntime as ort
         ORIENTATION_SESSION = ort.InferenceSession(str(ORIENTATION_MODEL))
         ORIENTATION_INPUT_NAME = ORIENTATION_SESSION.get_inputs()[0].name
@@ -47,6 +54,79 @@ def load_orientation_model():
         return None
 
 
+def orientation_subprocess_available():
+    return ORIENTATION_MODEL.exists() and ORIENTATION_PYTHON.exists() and ORIENTATION_SCRIPT.exists()
+
+
+def predict_orientation_subprocess(image):
+    import tempfile
+
+    if not orientation_subprocess_available():
+        return {
+            "label": "unavailable",
+            "confidence": 0.0,
+            "turns": 0,
+            "error": "Orientation subprocess not available",
+        }
+
+    tmp_path = None
+    try:
+        # Write the crop to a temporary JPEG file for the subprocess.
+        fd, tmp_path = tempfile.mkstemp(prefix="orientation_", suffix=".jpg", dir=str(DATA_ROOT))
+        os.close(fd)
+        cv2.imwrite(tmp_path, image, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
+
+        proc = subprocess.run(
+            [str(ORIENTATION_PYTHON), str(ORIENTATION_SCRIPT), str(ORIENTATION_MODEL), tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout or "").strip().splitlines()
+            return {
+                "label": "unavailable",
+                "confidence": 0.0,
+                "turns": 0,
+                "error": msg[-1] if msg else "orientation_processor failed",
+            }
+        last_line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        data = json.loads(last_line) if last_line else {}
+        if data.get("error"):
+            return {
+                "label": "unavailable",
+                "confidence": 0.0,
+                "turns": 0,
+                "error": data.get("error"),
+            }
+        return {
+            "label": data.get("label", "unknown"),
+            "confidence": float(data.get("confidence", 0.0)),
+            "turns": int(data.get("turns", 0)),
+            "error": None,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "label": "unavailable",
+            "confidence": 0.0,
+            "turns": 0,
+            "error": "Orientation subprocess timed out",
+        }
+    except Exception as exc:
+        return {
+            "label": "unavailable",
+            "confidence": 0.0,
+            "turns": 0,
+            "error": str(exc),
+        }
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def json_response(handler, payload, status=200):
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status)
@@ -54,6 +134,28 @@ def json_response(handler, payload, status=200):
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _sanitize_folder_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return "Person"
+    cleaned = []
+    for ch in name:
+        if ch.isalnum() or ch in (" ", "_", "-", "."):
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    out = "".join(cleaned).strip().strip(".")
+    return out or "Person"
+
+
+def _ensure_dir(path: Path) -> Path:
+    path = Path(os.path.expanduser(str(path))).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise ValueError(f"Not a directory: {path}")
+    return path
 
 
 def read_json(handler):
@@ -415,7 +517,10 @@ def rotate_quarter_turns(image, turns):
 def predict_orientation(image):
     session = load_orientation_model()
     if session is None:
-        return {"label": "unavailable", "confidence": 0.0, "turns": 0, "error": ORIENTATION_ERROR}
+        # Common case on machines where the server runs an unsupported Python
+        # (e.g., 3.14) and onnxruntime can't be imported. Use a subprocess that
+        # runs inside OBJECT_ORIENTATION_DETECTOR/venv instead.
+        return predict_orientation_subprocess(image)
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb).resize((384, 384), Image.BILINEAR)
     arr = np.asarray(pil).astype("float32") / 255.0
@@ -424,12 +529,14 @@ def predict_orientation(image):
     arr = (arr - mean) / std
     arr = np.transpose(arr, (2, 0, 1))[None, ...]
     outputs = session.run(None, {ORIENTATION_INPUT_NAME: arr})
-    logits = outputs[0][0]
+    logits = np.asarray(outputs[0]).squeeze()
+    if logits.ndim != 1:
+        logits = logits.reshape(-1)
     logits = logits - np.max(logits)
-    probs = np.exp(logits) / np.sum(np.exp(logits))
+    probs = np.exp(logits) / (np.sum(np.exp(logits)) + 1e-12)
     pred = int(np.argmax(probs))
     labels = ["0deg", "90deg", "180deg", "270deg"]
-    correction_turns = {0: 0, 1: 3, 2: 2, 3: 1}[pred]
+    correction_turns = {0: 0, 1: 1, 2: 2, 3: 3}[pred]
     return {
         "label":      labels[pred],
         "confidence": float(probs[pred]),
@@ -460,6 +567,8 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/exports/"):
             return self.serve_file(EXPORT_ROOT / unquote(parsed.path.removeprefix("/exports/")))
+        if parsed.path.startswith("/faces/"):
+            return self.serve_file(FACE_ROOT / unquote(parsed.path.removeprefix("/faces/")))
         path = parsed.path
         if path == "/":
             path = "/index.html"
@@ -471,6 +580,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 return self.detect()
             if self.path == "/api/crop":
                 return self.crop()
+            if self.path == "/api/faces":
+                return self.group_faces()
+            if self.path == "/api/faces_session":
+                return self.group_faces_session()
+            if self.path == "/api/save_all":
+                return self.save_all_crops()
+            if self.path == "/api/save_faces":
+                return self.save_face_folders()
+            if self.path == "/api/pick_folder":
+                return self.pick_folder()
             json_response(self, {"error": "Not found"}, 404)
         except Exception as exc:
             json_response(self, {"error": str(exc)}, 500)
@@ -515,7 +634,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "height":  int(image.shape[0]),
                 "boxes":   boxes,
                 "modelStatus": {
-                    "orientation":  "available" if load_orientation_model() else "unavailable",
+                    "orientation":  "available" if (load_orientation_model() or orientation_subprocess_available()) else "unavailable",
                     "faceGrouping": "planned",
                     "upscale":      "planned",
                 },
@@ -562,6 +681,220 @@ class AppHandler(BaseHTTPRequestHandler):
             "results":    results,
             "exportPath": str(export_dir),
         })
+
+    def group_faces(self):
+        payload = read_json(self)
+        export_id = payload.get("exportId", "")
+        threshold = float(payload.get("threshold", 0.35))
+        margin    = float(payload.get("margin", 0.35))
+        if not export_id:
+            return json_response(self, {"error": "exportId required"}, 400)
+        export_dir = EXPORT_ROOT / export_id
+        if not export_dir.is_dir():
+            return json_response(self, {"error": f"Export not found: {export_id}"}, 404)
+        face_out = FACE_ROOT / export_id
+        try:
+            proc = subprocess.run(
+                [FACE_PYTHON, str(FACE_SCRIPT), str(export_dir), str(face_out),
+                 str(threshold), str(margin)],
+                capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip().splitlines()
+                return json_response(self, {"error": err[-1] if err else "face_processor failed"}, 500)
+            # InsightFace prints loader messages to stdout; JSON is always the last line
+            last_line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+            data = json.loads(last_line)
+        except subprocess.TimeoutExpired:
+            return json_response(self, {"error": "Face processing timed out"}, 500)
+        except Exception as exc:
+            return json_response(self, {"error": str(exc)}, 500)
+
+        # attach public URLs
+        for person in data.get("persons", []):
+            for face in person.get("faces", []):
+                face["url"] = f"/faces/{export_id}/{face['file']}"
+        json_response(self, data)
+
+    def group_faces_session(self):
+        payload = read_json(self)
+        export_ids = payload.get("exportIds") or []
+        threshold = float(payload.get("threshold", 0.35))
+        margin    = float(payload.get("margin", 0.35))
+
+        if not isinstance(export_ids, list) or not export_ids:
+            return json_response(self, {"error": "exportIds must be a non-empty list"}, 400)
+
+        session_id = f"session_{int(time.time())}_{uuid.uuid4().hex}"
+        session_export_dir = SESSION_EXPORT_ROOT / session_id
+        session_export_dir.mkdir(parents=True, exist_ok=True)
+
+        copied = 0
+        for export_id in export_ids:
+            if not isinstance(export_id, str) or not export_id.strip():
+                continue
+            export_dir = EXPORT_ROOT / export_id
+            if not export_dir.is_dir():
+                continue
+            for file in export_dir.iterdir():
+                if file.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                    continue
+                dest = session_export_dir / f"{export_id}__{file.name}"
+                if dest.exists():
+                    continue
+                try:
+                    os.link(file, dest)
+                except Exception:
+                    shutil.copy2(file, dest)
+                copied += 1
+
+        if copied == 0:
+            return json_response(self, {"error": "No exported images found for this session"}, 400)
+
+        face_out = FACE_ROOT / session_id
+        try:
+            proc = subprocess.run(
+                [FACE_PYTHON, str(FACE_SCRIPT), str(session_export_dir), str(face_out),
+                 str(threshold), str(margin)],
+                capture_output=True, text=True, timeout=600,
+            )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip().splitlines()
+                return json_response(self, {"error": err[-1] if err else "face_processor failed"}, 500)
+            last_line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+            data = json.loads(last_line)
+        except subprocess.TimeoutExpired:
+            return json_response(self, {"error": "Face processing timed out"}, 500)
+        except Exception as exc:
+            return json_response(self, {"error": str(exc)}, 500)
+
+        for person in data.get("persons", []):
+            for face in person.get("faces", []):
+                face["url"] = f"/faces/{session_id}/{face['file']}"
+
+        data["sessionId"] = session_id
+        data["total_images"] = copied
+        json_response(self, data)
+
+    def save_all_crops(self):
+        payload = read_json(self)
+        export_ids = payload.get("exportIds") or []
+        dest_dir = (payload.get("destDir") or "").strip()
+        if not isinstance(export_ids, list) or not export_ids:
+            return json_response(self, {"error": "exportIds must be a non-empty list"}, 400)
+        if not dest_dir:
+            return json_response(self, {"error": "destDir required"}, 400)
+
+        parent = _ensure_dir(Path(dest_dir))
+        out_dir = parent / f"photo_studio_all_{int(time.time())}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        saved = 0
+        for export_id in export_ids:
+            if not isinstance(export_id, str) or not export_id.strip():
+                continue
+            export_dir = EXPORT_ROOT / export_id
+            if not export_dir.is_dir():
+                continue
+            for file in export_dir.iterdir():
+                if file.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                    continue
+                dest = out_dir / f"{export_id}__{file.name}"
+                if dest.exists():
+                    continue
+                shutil.copy2(file, dest)
+                saved += 1
+
+        json_response(self, {"outDir": str(out_dir), "saved": saved})
+
+    def save_face_folders(self):
+        payload = read_json(self)
+        session_id = (payload.get("sessionId") or "").strip()
+        dest_dir = (payload.get("destDir") or "").strip()
+        top_k = int(payload.get("topK", 10))
+        min_photos = int(payload.get("minPhotos", 2))
+        names = payload.get("names") or {}
+
+        if not session_id:
+            return json_response(self, {"error": "sessionId required"}, 400)
+        if not dest_dir:
+            return json_response(self, {"error": "destDir required"}, 400)
+        if top_k < 1:
+            top_k = 1
+        if min_photos < 1:
+            min_photos = 1
+
+        group_file = FACE_ROOT / session_id / "groups.json"
+        if not group_file.exists():
+            return json_response(self, {"error": f"groups.json not found for sessionId: {session_id}"}, 404)
+
+        session_export_dir = SESSION_EXPORT_ROOT / session_id
+        if not session_export_dir.is_dir():
+            return json_response(self, {"error": f"session export dir not found: {session_id}"}, 404)
+
+        parent = _ensure_dir(Path(dest_dir))
+        out_dir = parent / f"photo_studio_faces_{session_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        data = json.loads(group_file.read_text())
+        persons = data.get("persons") or []
+        persons = [p for p in persons if int(p.get("count", 0)) >= min_photos]
+        persons.sort(key=lambda p: -int(p.get("count", 0)))
+        persons = persons[:top_k]
+
+        saved = 0
+        folders = 0
+
+        for p in persons:
+            pid = p.get("id") or "person"
+            raw_name = None
+            if isinstance(names, dict):
+                raw_name = names.get(pid)
+            folder_name = _sanitize_folder_name(raw_name or pid)
+            person_dir = out_dir / folder_name
+            person_dir.mkdir(parents=True, exist_ok=True)
+            folders += 1
+
+            seen_sources = set()
+            for face in (p.get("faces") or []):
+                src_name = face.get("source")
+                if not src_name or src_name in seen_sources:
+                    continue
+                seen_sources.add(src_name)
+                src_path = session_export_dir / src_name
+                if not src_path.exists():
+                    continue
+                dest = person_dir / src_name
+                if dest.exists():
+                    continue
+                shutil.copy2(src_path, dest)
+                saved += 1
+
+        json_response(self, {"outDir": str(out_dir), "saved": saved, "folders": folders})
+
+    def pick_folder(self):
+        # macOS-only: open a native Finder folder picker.
+        if sys.platform != "darwin":
+            return json_response(self, {"error": "Folder picker is only supported on macOS"}, 400)
+        try:
+            script = 'POSIX path of (choose folder with prompt "Choose destination folder")'
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                msg = (proc.stderr or proc.stdout or "").strip()
+                if "User canceled" in msg or "cancel" in msg.lower():
+                    return json_response(self, {"error": "Cancelled"}, 400)
+                return json_response(self, {"error": msg or "Folder picker failed"}, 500)
+            path = (proc.stdout or "").strip()
+            if path.endswith("/"):
+                path = path[:-1]
+            return json_response(self, {"path": path})
+        except subprocess.TimeoutExpired:
+            return json_response(self, {"error": "Folder picker timed out"}, 500)
 
 
 def main():

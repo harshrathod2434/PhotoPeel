@@ -27,6 +27,27 @@ input {
   font: inherit;
 }
 
+.text-input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: var(--ink);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
 button {
   border: 1px solid var(--line);
   background: white;
@@ -222,7 +243,7 @@ h1 {
 .workspace {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto minmax(380px, 1fr) 250px;
+  grid-template-rows: auto minmax(600px, 1fr) minmax(800px, 40vh);
   height: 100vh;
 }
 
@@ -261,7 +282,37 @@ h1 {
 
 .editor {
   overflow: auto;
+  padding: 0;
+  min-height: 0;
+}
+
+.main-split {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 12px;
   padding: 18px;
+}
+
+.current-panel {
+  min-height: 0;
+}
+
+.current-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.current-panel-head #exportPath {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .canvas-wrap {
@@ -336,8 +387,11 @@ h1 {
 .results {
   border-top: 1px solid var(--line);
   background: white;
-  overflow: auto;
   padding: 14px 18px 18px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .results-head {
@@ -346,6 +400,23 @@ h1 {
   gap: 14px;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.results-panels {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.results-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+  overflow: auto;
+  min-height: 0;
 }
 
 .results-grid {
@@ -378,6 +449,98 @@ h1 {
 
 .result-card strong {
   font-size: 13px;
+}
+
+.face-groups {
+  margin-top: 0;
+}
+
+.face-groups-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.face-groups-head h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  color: #303640;
+}
+
+.face-groups-head span,
+.face-groups-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.face-groups-empty {
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
+.person-card {
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.person-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: white;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.person-header strong {
+  flex: 1;
+}
+
+.person-name {
+  width: 220px;
+  max-width: 40vw;
+}
+
+.person-header span:last-child {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.person-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.person-faces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.face-thumb img {
+  width: 72px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  display: block;
 }
 
 @media (max-width: 900px) {

@@ -1,6 +1,5 @@
 # User data
-appdata/uploads/
-appdata/exports/
+appdata/
 
 # Python
 __pycache__/
