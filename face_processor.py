@@ -13,6 +13,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ann_index import LSHIndex
+
 
 def _load_app():
     from insightface.app import FaceAnalysis
@@ -49,6 +51,16 @@ def _cosine(a, b):
     return float(np.dot(a, b) / denom) if denom > 0 else 0.0
 
 
+def _normalize(vec):
+    vec = np.asarray(vec, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
+
+
+def _log(message):
+    print(message, file=sys.stderr, flush=True)
+
+
 def _cluster(all_faces, threshold):
     """Greedy centroid clustering on ArcFace embeddings."""
     clusters = []
@@ -68,6 +80,86 @@ def _cluster(all_faces, threshold):
         else:
             clusters.append({"centroid": emb.copy(), "faces": [face]})
     clusters.sort(key=lambda c: -len(c["faces"]))
+    return clusters
+
+
+def _cluster_ann(all_faces, threshold, ann_tables=10, ann_bits=12,
+                 max_candidates=256, min_clusters_for_ann=30):
+    """Approximate clustering using LSH over centroids."""
+    if not all_faces:
+        return []
+
+    dim = len(all_faces[0]["embedding"])
+    index = LSHIndex(dim, num_tables=ann_tables, num_bits=ann_bits, seed=42)
+    clusters = []
+    total_candidates = 0
+    total_queries = 0
+    full_scans = 0
+    ann_hits = 0
+
+    _log(
+        "ANN config: tables=%d bits=%d max_candidates=%d min_clusters_for_ann=%d" % (
+            ann_tables, ann_bits, max_candidates, min_clusters_for_ann
+        )
+    )
+
+    for face in all_faces:
+        emb = _normalize(face["embedding"])
+        best_sim, best_i = -1.0, -1
+
+        candidate_ids = []
+        if len(clusters) >= min_clusters_for_ann:
+            candidate_ids = index.query(emb, max_candidates=max_candidates)
+            total_queries += 1
+            total_candidates += len(candidate_ids)
+        else:
+            full_scans += 1
+
+        for i in candidate_ids:
+            sim = _cosine(emb, clusters[i]["centroid"])
+            if sim > best_sim:
+                best_sim, best_i = sim, i
+
+        if best_i != -1 and best_sim >= threshold:
+            ann_hits += 1
+            n = len(clusters[best_i]["faces"]) + 1
+            clusters[best_i]["centroid"] = (
+                clusters[best_i]["centroid"] * (n - 1) / n + emb / n
+            )
+            clusters[best_i]["centroid"] = _normalize(clusters[best_i]["centroid"])
+            clusters[best_i]["faces"].append(face)
+            index.update(best_i, clusters[best_i]["centroid"])
+            continue
+
+        if not candidate_ids and len(clusters) < min_clusters_for_ann:
+            for i, c in enumerate(clusters):
+                sim = _cosine(emb, c["centroid"])
+                if sim > best_sim:
+                    best_sim, best_i = sim, i
+            if best_i != -1 and best_sim >= threshold:
+                n = len(clusters[best_i]["faces"]) + 1
+                clusters[best_i]["centroid"] = (
+                    clusters[best_i]["centroid"] * (n - 1) / n + emb / n
+                )
+                clusters[best_i]["centroid"] = _normalize(clusters[best_i]["centroid"])
+                clusters[best_i]["faces"].append(face)
+                index.update(best_i, clusters[best_i]["centroid"])
+                continue
+
+        clusters.append({"centroid": emb.copy(), "faces": [face]})
+        index.add(emb, item_id=len(clusters) - 1)
+
+    clusters.sort(key=lambda c: -len(c["faces"]))
+
+    avg_candidates = total_candidates / max(1, total_queries)
+    hit_rate = ann_hits / max(1, total_queries)
+    _log(
+        "ANN clustering: faces=%d clusters=%d tables=%d bits=%d "
+        "avg_candidates=%.1f hit_rate=%.2f full_scans=%d" % (
+            len(all_faces), len(clusters), ann_tables, ann_bits,
+            avg_candidates, hit_rate, full_scans
+        )
+    )
     return clusters
 
 
@@ -100,7 +192,7 @@ def process_export(export_dir, out_dir, threshold=0.35, margin=0.35):
         (out_dir / "groups.json").write_text(json.dumps(result))
         return result
 
-    clusters = _cluster(all_faces, threshold)
+    clusters = _cluster_ann(all_faces, threshold)
 
     persons = []
     for p_idx, cluster in enumerate(clusters):

@@ -699,6 +699,8 @@ class AppHandler(BaseHTTPRequestHandler):
                  str(threshold), str(margin)],
                 capture_output=True, text=True, timeout=300,
             )
+            if proc.stderr:
+                print(f"[face_processor] {proc.stderr.strip()}", file=sys.stderr)
             if proc.returncode != 0:
                 err = (proc.stderr or proc.stdout or "").strip().splitlines()
                 return json_response(self, {"error": err[-1] if err else "face_processor failed"}, 500)
@@ -758,6 +760,8 @@ class AppHandler(BaseHTTPRequestHandler):
                  str(threshold), str(margin)],
                 capture_output=True, text=True, timeout=600,
             )
+            if proc.stderr:
+                print(f"[face_processor] {proc.stderr.strip()}", file=sys.stderr)
             if proc.returncode != 0:
                 err = (proc.stderr or proc.stdout or "").strip().splitlines()
                 return json_response(self, {"error": err[-1] if err else "face_processor failed"}, 500)
